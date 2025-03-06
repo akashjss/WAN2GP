@@ -6,6 +6,11 @@ import torch.cuda.amp as amp
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import rearrange
+from ..device_utils import get_device
+from safetensors.torch import load_file
+import os
+import requests
+from pathlib import Path
 
 __all__ = [
     'WanVAE',
@@ -736,15 +741,37 @@ def _video_vae(pretrained_path=None, z_dim=None, device='cpu', **kwargs):
     return model
 
 
+def download_file(url, local_path):
+    """Download a file from url to local_path if it doesn't exist"""
+    if not os.path.exists(local_path):
+        print(f"Downloading {url} to {local_path}...")
+        os.makedirs(os.path.dirname(local_path), exist_ok=True)
+        response = requests.get(url, stream=True)
+        response.raise_for_status()
+        with open(local_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+
+
 class WanVAE:
 
-    def __init__(self,
-                 z_dim=16,
-                 vae_pth='cache/vae_step_411000.pth',
-                 dtype=torch.float,
-                 device="cuda"):
+    def __init__(
+        self,
+        z_dim=16,
+        vae_pth='cache/vae_step_411000.pth',
+        dtype=torch.float,
+        device_id=0,
+        rank=0,
+        fsdp=False,
+        use_usp=False,
+        device=None,
+    ):
+        # Use device utilities instead of assuming CUDA
+        self.device = get_device()
         self.dtype = dtype
-        self.device = device
+        self.rank = rank
+        self.fsdp = fsdp
+        self.use_usp = use_usp
 
         mean = [
             -0.7571, -0.7089, -0.9113, 0.1075, -0.1745, 0.9653, -0.1517, 1.5508,
@@ -754,15 +781,21 @@ class WanVAE:
             2.8184, 1.4541, 2.3275, 2.6558, 1.2196, 1.7708, 2.6052, 2.0743,
             3.2687, 2.1526, 2.8652, 1.5579, 1.6382, 1.1253, 2.8251, 1.9160
         ]
-        self.mean = torch.tensor(mean, dtype=dtype, device=device)
-        self.std = torch.tensor(std, dtype=dtype, device=device)
+        self.mean = torch.tensor(mean, dtype=dtype, device=self.device)
+        self.std = torch.tensor(std, dtype=dtype, device=self.device)
         self.scale = [self.mean, 1.0 / self.std]
+
+        # Check and download VAE model if needed
+        if not os.path.exists(vae_pth):
+            vae_url = "https://huggingface.co/Wan-AI/Wan2.1/resolve/main/vae_step_411000.pth"
+            download_file(vae_url, vae_pth)
 
         # init model
         self.model = _video_vae(
             pretrained_path=vae_pth,
             z_dim=z_dim,
-        ).eval().requires_grad_(False).to(device)
+            device=self.device
+        ).eval().requires_grad_(False).to(self.device)
 
     def encode(self, videos, tile_size = 256):
         """
@@ -772,7 +805,6 @@ class WanVAE:
             return [ self.model.spatial_tiled_encode(u.unsqueeze(0), self.scale, tile_size).float().squeeze(0) for u in videos ]
         else:
             return [ self.model.encode(u.unsqueeze(0), self.scale).float().squeeze(0) for u in videos ]
-
 
     def decode(self, zs, tile_size):
         if tile_size > 0:

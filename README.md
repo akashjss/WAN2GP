@@ -57,13 +57,15 @@ You will find the original Wan2.1 Video repository here: https://github.com/Wan-
  
 
 
-## Installation Guide for Linux and Windows
+## Installation Guide for Linux, Windows and Mac
 
 **If you are looking for a one click installation, just go to the Pinokio App store : https://pinokio.computer/**
 
 Otherwise you will find the instructions below:
 
-This app has been tested on Python 3.10 / 2.6.0  / Cuda 12.4.
+This app has been tested on:
+- Linux/Windows: Python 3.10 / 2.6.0 / Cuda 12.4
+- Mac: Python 3.10 / 2.6.0 / MPS (Metal Performance Shaders)
 
 ```shell
 # 0 Download the source and create a Python 3.10.9 environment using conda or create a venv using python
@@ -73,22 +75,17 @@ conda create -n wan2gp python=3.10.9
 conda activate wan2gp
 
 # 1 Install pytorch 2.6.0
-pip install torch==2.6.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/test/cu124  
+# For Linux/Windows:
+pip install torch==2.6.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/test/cu124
+
+# For Mac:
+pip install torch==2.6.0 torchvision torchaudio
 
 # 2. Install pip dependencies
 pip install -r requirements.txt
 
-# 3.1 optional Sage attention support (30% faster, easy to install on Linux but much harder on Windows)
-pip install sageattention==1.0.6 
-
-# or for Sage Attention 2 (40% faster, sorry only manual compilation for the moment)
-git clone https://github.com/thu-ml/SageAttention
-cd SageAttention 
-pip install -e .
-
-# 3.2 optional Flash attention support (easy to install on Linux but much harder on Windows)
-pip install flash-attn==2.7.2.post1
-
+# 3. Optional optimizations (Linux/Windows only)
+# Note: Sage attention and Flash attention are not supported on Mac
 ```
 
 Note pytorch *sdpa attention* is available by default. It is worth installing *Sage attention* (albout not as simple as it sounds) because it offers a 30% speed boost over *sdpa attention* at a small quality cost.
@@ -106,6 +103,16 @@ pip install https://github.com/woct0rdho/triton-windows/releases/download/v3.2.0
 pip install https://github.com/deepbeepmeep/SageAttention/raw/refs/heads/main/releases/sageattention-2.1.0-cp310-cp310-win_amd64.whl # for pytorch 2.6.0 (experimental, if it works, otherwise you you will need to install and compile manually, see above) 
  
 ```
+
+# 4. Download model files
+# The models will be automatically downloaded when you first run the application
+# Or you can manually download them from:
+# - Text2Video models: https://huggingface.co/Wan-AI/Wan2.1
+# - VAE model: https://huggingface.co/Wan-AI/Wan2.1/blob/main/vae_step_411000.pth
+
+# Place downloaded files in these locations:
+# - Text2Video models: ./ckpts/
+# - VAE model: ./cache/vae_step_411000.pth
 
 ## Run the application
 
@@ -210,5 +217,11 @@ A Flux derived application very powerful that can be used to transfer an object 
 
 - YuE GP: https://github.com/deepbeepmeep/YuEGP :\
 A great song generator (instruments + singer's voice) based on prompted Lyrics and a genre description. Thanks to mmgp you can run it with less than 10 GB of VRAM without waiting forever.
+
+### Mac-Specific Notes
+- The application will automatically use MPS (Metal Performance Shaders) on Mac if available
+- Some CUDA-specific optimizations like Sage attention and Flash attention are not available on Mac
+- Performance may be lower compared to CUDA GPUs
+- Memory usage patterns may differ from CUDA implementations
 
 

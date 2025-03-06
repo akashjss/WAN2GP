@@ -20,6 +20,12 @@ import gc
 import traceback
 import math
 import asyncio
+from wan.device_utils import is_cuda_available, is_mps_available
+
+# Add at the top after imports
+if is_mps_available():
+    from mmgp_patch import patch_mmgp
+    patch_mmgp()
 
 def _parse_args():
     parser = argparse.ArgumentParser(
@@ -423,25 +429,28 @@ def load_i2v_model(model_filename, value):
 
     return wan_model, pipe
 
-def load_models(i2v,  lora_dir,  lora_preselected_preset ):
+def load_models(i2v, lora_dir, lora_preselected_preset):
     download_models(transformer_filename_i2v if i2v else transformer_filename_t2v, text_encoder_filename) 
 
     if i2v:
-        res720P= "720p" in transformer_filename_i2v
-        wan_model, pipe = load_i2v_model(transformer_filename_i2v,"720P" if res720P else "480P")
+        res720P = "720p" in transformer_filename_i2v
+        wan_model, pipe = load_i2v_model(transformer_filename_i2v, "720P" if res720P else "480P")
     else:
-        wan_model, pipe = load_t2v_model(transformer_filename_t2v,"")
+        wan_model, pipe = load_t2v_model(transformer_filename_t2v, "")
 
-    kwargs = { "extraModelsToQuantize": None}
+    # Update profile settings based on device
+    kwargs = {
+        'verboseLevel': 1,  # Keep only the basic parameters
+    }
+
     if profile == 2 or profile == 4:
-        kwargs["budgets"] = { "transformer" : 100 if preload  == 0 else preload, "text_encoder" : 100, "*" : 1000 }
+        kwargs["budgets"] = {"transformer": 100 if preload == 0 else preload, "text_encoder": 100, "*": 1000}
     elif profile == 3:
-        kwargs["budgets"] = { "*" : "70%" }
+        kwargs["budgets"] = {"*": "70%"}
 
-
-    loras, loras_names, default_loras_choices, default_loras_multis_str, default_lora_preset, loras_presets = setup_loras(pipe,  lora_dir, lora_preselected_preset, None)
-    offloadobj = offload.profile(pipe, profile_no= profile, compile = compile, quantizeTransformer = quantizeTransformer, **kwargs)  
-
+    loras, loras_names, default_loras_choices, default_loras_multis_str, default_lora_preset, loras_presets = setup_loras(pipe, lora_dir, lora_preselected_preset, None)
+    
+    offloadobj = offload.profile(pipe, **kwargs)
 
     return wan_model, offloadobj, loras, loras_names, default_loras_choices, default_loras_multis_str, default_lora_preset, loras_presets
 
@@ -1345,6 +1354,17 @@ def create_demo():
 
     return demo
 
+def setup_device_specific_options(parser):
+    """Add device-specific command line options."""
+    if is_cuda_available():
+        parser.add_argument('--compile', action='store_true', help='Turn on pytorch compilation')
+        parser.add_argument('--attention', type=str, choices=['sdpa', 'flash', 'sage', 'sage2'], 
+                          help='Force attention mode')
+    elif is_mps_available():
+        # MPS-specific options could be added here
+        pass
+    return parser
+
 if __name__ == "__main__":
     os.environ["GRADIO_ANALYTICS_ENABLED"] = "False"
     server_port = int(args.server_port)
@@ -1358,7 +1378,15 @@ if __name__ == "__main__":
     if len(server_name) == 0:
         server_name = os.getenv("SERVER_NAME", "localhost")
 
-        
+    # Disable CUDA-specific features on Mac
+    if is_mps_available():
+        if args.compile:
+            print("Warning: PyTorch compilation not supported on MPS, disabling...")
+            args.compile = False
+        if args.attention and args.attention not in ['sdpa']:
+            print("Warning: Only SDPA attention supported on MPS, falling back...")
+            args.attention = 'sdpa'
+
     demo = create_demo()
     if args.open_browser:
         import webbrowser 

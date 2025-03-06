@@ -81,8 +81,13 @@ class WanT2V:
 
         
         self.vae = WanVAE(
+            z_dim=16,
             vae_pth=os.path.join(checkpoint_dir, config.vae_checkpoint),
-            device=self.device)
+            dtype=self.param_dtype,
+            device_id=device_id,
+            rank=rank,
+            fsdp=dit_fsdp,
+            use_usp=use_usp)
 
         logging.info(f"Creating WanModel from {model_filename}")
         from mmgp import offload

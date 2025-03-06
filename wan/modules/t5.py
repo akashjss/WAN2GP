@@ -8,6 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from .tokenizers import HuggingfaceTokenizer
+from ..device_utils import get_device, current_device
 
 __all__ = [
     'T5Model',
@@ -438,11 +439,12 @@ def _t5(name,
         model_cls = T5Model
 
     # init model
+    device = get_device() if device == 'cpu' else device  # Use MPS if available when no specific device requested
     with torch.device(device):
         model = model_cls(**kwargs)
 
     # set device
-    # model = model.to(dtype=dtype, device=device)
+    # model = model.to(dtype=dtype, device=device)  # Device setting handled in model init
 
     # init tokenizer
     if return_tokenizer:
@@ -475,14 +477,14 @@ class T5EncoderModel:
         self,
         text_len,
         dtype=torch.bfloat16,
-        device=torch.cuda.current_device(),
+        device=None,
         checkpoint_path=None,
         tokenizer_path=None,
         shard_fn=None,
     ):
         self.text_len = text_len
         self.dtype = dtype
-        self.device = device
+        self.device = get_device()
         self.checkpoint_path = checkpoint_path
         self.tokenizer_path = tokenizer_path
 
@@ -493,22 +495,25 @@ class T5EncoderModel:
                 encoder_only=True,
                 return_tokenizer=False,
                 dtype=dtype,
-                device=device).eval().requires_grad_(False)
+                device=self.device).eval().requires_grad_(False)
         logging.info(f'loading {checkpoint_path}')
         from mmgp import offload
-        offload.load_model_data(model,checkpoint_path )
+        offload.load_model_data(model, checkpoint_path)
 
         self.model = model
         if shard_fn is not None:
             self.model = shard_fn(self.model, sync_module_states=False)
         else:
             self.model.to(self.device)
+
         # init tokenizer
-        tokenizer_path= "google/umt5-xxl"
+        tokenizer_path = "google/umt5-xxl"
         self.tokenizer = HuggingfaceTokenizer(
             name=tokenizer_path, seq_len=text_len, clean='whitespace')
 
-    def __call__(self, texts, device):
+    def __call__(self, texts, device=None):
+        if device is None:
+            device = self.device
         ids, mask = self.tokenizer(
             texts, return_mask=True, add_special_tokens=True)
         ids = ids.to(device)
