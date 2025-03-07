@@ -21,7 +21,10 @@ from .modules.vae import WanVAE
 from .utils.fm_solvers import (FlowDPMSolverMultistepScheduler,
                                get_sampling_sigmas, retrieve_timesteps)
 from .utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
+from .device_utils import get_device
 
+def is_mps_available():
+    return hasattr(torch.backends, 'mps') and torch.backends.mps.is_available()
 
 class WanT2V:
 
@@ -59,7 +62,7 @@ class WanT2V:
             t5_cpu (`bool`, *optional*, defaults to False):
                 Whether to place T5 model on CPU. Only works without t5_fsdp.
         """
-        self.device = torch.device(f"cuda:{device_id}")
+        self.device = get_device()
         self.config = config
         self.rank = rank
         self.t5_cpu = t5_cpu
@@ -92,12 +95,73 @@ class WanT2V:
         logging.info(f"Creating WanModel from {model_filename}")
         from mmgp import offload
 
+        # Add validation for model file
+        if not model_filename or not os.path.exists(model_filename):
+            raise ValueError(f"Model file not found: {model_filename}")
 
-        self.model = offload.fast_load_transformers_model(model_filename, modelClass=WanModel)
+        logging.info(f"Loading model from: {model_filename}")
+        
+        # Modified model loading approach for MPS/CUDA compatibility
+        try:
+            if self.device.type == 'mps':
+                # Direct loading for MPS devices
+                self.model = WanModel()
+                try:
+                    # Try loading with different methods
+                    try:
+                        state_dict = torch.load(model_filename, map_location='cpu')
+                        if isinstance(state_dict, dict):
+                            if 'state_dict' in state_dict:
+                                state_dict = state_dict['state_dict']
+                        logging.info("Model loaded successfully")
+                    except Exception as e:
+                        logging.warning(f"Standard loading failed, trying pickle: {str(e)}")
+                        # Try alternative loading method
+                        import pickle
+                        with open(model_filename, 'rb') as f:
+                            state_dict = pickle.load(f)
+                            if isinstance(state_dict, dict):
+                                if 'state_dict' in state_dict:
+                                    state_dict = state_dict['state_dict']
+                
+                    # Validate state dict
+                    if not isinstance(state_dict, dict):
+                        raise ValueError(f"Invalid state dict type: {type(state_dict)}")
+                    
+                    logging.info(f"State dict keys: {state_dict.keys()}")
+                    
+                    # Load state dict
+                    missing_keys, unexpected_keys = self.model.load_state_dict(state_dict, strict=False)
+                    if missing_keys:
+                        logging.warning(f"Missing keys: {missing_keys}")
+                    if unexpected_keys:
+                        logging.warning(f"Unexpected keys: {unexpected_keys}")
+                    
+                    self.model = self.model.to(self.device)
+                    logging.info("Model successfully moved to MPS device")
+                
+                except Exception as e:
+                    logging.error(f"Detailed loading error: {str(e)}")
+                    raise
+            else:
+                # Use offload for CUDA devices
+                self.model = offload.fast_load_transformers_model(model_filename, modelClass=WanModel)
+                logging.info("Model loaded with offload successfully")
+        
+        except Exception as e:
+            logging.error(f"Failed to load model: {str(e)}")
+            raise RuntimeError(f"Could not load model from {model_filename}: {str(e)}")
 
-
+        # Validate model was loaded correctly
+        if not hasattr(self.model, 'parameters'):
+            raise RuntimeError("Model loading failed - invalid model object")
 
         self.model.eval().requires_grad_(False)
+        logging.info("Model successfully set to eval mode")
+
+        # Add model architecture logging
+        if logging.getLogger().level <= logging.DEBUG:
+            logging.debug(f"Model architecture:\n{self.model}")
 
         if use_usp:
             from xfuser.core.distributed import \
@@ -183,11 +247,9 @@ class WanT2V:
         if n_prompt == "":
             n_prompt = self.sample_neg_prompt
         seed = seed if seed >= 0 else random.randint(0, sys.maxsize)
-        seed_g = torch.Generator(device=self.device)
-        seed_g.manual_seed(seed)
-
+        
+        # Generate text embeddings
         if not self.t5_cpu:
-            # self.text_encoder.model.to(self.device)
             context = self.text_encoder([input_prompt], self.device)
             context_null = self.text_encoder([n_prompt], self.device)
             if offload_model:
@@ -197,17 +259,34 @@ class WanT2V:
             context_null = self.text_encoder([n_prompt], torch.device('cpu'))
             context = [t.to(self.device) for t in context]
             context_null = [t.to(self.device) for t in context_null]
-
-        noise = [
-            torch.randn(
-                target_shape[0],
-                target_shape[1],
-                target_shape[2],
-                target_shape[3],
-                dtype=torch.float32,
-                device=self.device,
-                generator=seed_g)
-        ]
+        
+        # Modified noise generation for MPS compatibility
+        if self.device.type == 'mps':
+            # For MPS, generate on CPU then move to device
+            noise = [
+                torch.randn(
+                    target_shape[0],
+                    target_shape[1],
+                    target_shape[2],
+                    target_shape[3],
+                    dtype=torch.float32,
+                    device='cpu').to(self.device)
+            ]
+            seed_g = None  # MPS doesn't support generator
+        else:
+            # For CUDA/CPU, use generator as before
+            seed_g = torch.Generator(device=self.device if torch.cuda.is_available() else 'cpu')
+            seed_g.manual_seed(seed)
+            noise = [
+                torch.randn(
+                    target_shape[0],
+                    target_shape[1],
+                    target_shape[2],
+                    target_shape[3],
+                    dtype=torch.float32,
+                    device=self.device,
+                    generator=seed_g)
+            ]
 
         @contextmanager
         def noop_no_sync():
@@ -289,7 +368,8 @@ class WanT2V:
 
         x0 = latents
         if offload_model:
-            self.model.cpu()
+            if self.device.type != 'mps':
+                self.model.cpu()
             torch.cuda.empty_cache()
         if self.rank == 0:
             videos = self.vae.decode(x0, VAE_tile_size)
@@ -302,5 +382,9 @@ class WanT2V:
             torch.cuda.synchronize()
         if dist.is_initialized():
             dist.barrier()
+
+        # Memory management for MPS
+        if self.device.type == 'mps':
+            torch.mps.empty_cache()
 
         return videos[0] if self.rank == 0 else None

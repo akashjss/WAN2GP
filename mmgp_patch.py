@@ -97,5 +97,13 @@ def patch_mmgp():
         self.cache_hits = 0
         self.cache_misses = 0
         self.cache_entries = {}
+        
+        # Preloading configuration
+        self.preloaded_blocks_per_model = {}  # Track preloaded blocks for each model
+        self.preload_budget = {}  # Budget for preloading per model
+        self.preload_strategy = 'default'  # Strategy for preloading
+        self.preload_scores = {}  # Scores for block preloading
+        self.preload_order = {}  # Order of block preloading
+        self.preload_status = {}  # Status of preloaded blocks
     
     offload.offload.__init__ = new_init 

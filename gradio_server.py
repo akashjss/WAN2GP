@@ -20,12 +20,22 @@ import gc
 import traceback
 import math
 import asyncio
-from wan.device_utils import is_cuda_available, is_mps_available
+from wan.device_utils import is_cuda_available, is_mps_available, get_device_memory
 
 # Add at the top after imports
 if is_mps_available():
+    print("MPS is available")
     from mmgp_patch import patch_mmgp
+    print("Applying mmgp patch...")
     patch_mmgp()
+    print("Patch applied")
+
+    # Verify the patch worked
+    test_offload = offload.offload()
+    if hasattr(test_offload, 'preloaded_blocks_per_model'):
+        print("Patch successful - preloaded_blocks_per_model exists")
+    else:
+        print("Patch failed - preloaded_blocks_per_model missing")
 
 def _parse_args():
     parser = argparse.ArgumentParser(
@@ -711,7 +721,7 @@ def generate_video(
     offload.shared_state["_attention"] =  attn
  
      # VAE Tiling
-    device_mem_capacity = torch.cuda.get_device_properties(0).total_memory / 1048576
+    device_mem_capacity = get_device_memory()
     if vae_config == 0:
         if device_mem_capacity >= 24000:
             use_vae_config = 1            
@@ -812,7 +822,7 @@ def generate_video(
  
     enable_RIFLEx = RIFLEx_setting == 0 and video_length > (6* 16) or RIFLEx_setting == 1
     # VAE Tiling
-    device_mem_capacity = torch.cuda.get_device_properties(0).total_memory / 1048576
+    device_mem_capacity = get_device_memory()
 
 
    # TeaCache   
